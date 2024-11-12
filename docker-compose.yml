@@ -63,17 +63,6 @@ services:
     depends_on:
       - kafka
 
-  clickhouse:
-    image: yandex/clickhouse-server:latest
-    container_name: clickhouse
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-    depends_on:
-      - kafka
-
   schema-registry:
     image: confluentinc/cp-schema-registry:latest
     environment:
@@ -98,7 +87,7 @@ services:
       AIRFLOW__KAFKA__BROKER_URL: kafka:29092
       AIRFLOW__WEBSERVER__SECRET_KEY: some-secret-key
     volumes:
-      - ./DAGs:/usr/local/airflow/dags  # Путь к вашим DAG
+      - ./DAGs:/opt/airflow/dags  # Путь к вашим DAG
     ports:
       - "8081:8080"
     command: >

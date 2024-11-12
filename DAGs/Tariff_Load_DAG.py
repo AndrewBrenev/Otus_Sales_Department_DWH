@@ -3,79 +3,104 @@
 from datetime import datetime
 import requests
 import logging as _log
-
 from airflow import DAG
-from airflow.hooks.postgres_hook import PostgresHook
 from airflow.operators.python_operator import PythonOperator
-from airflow.operators.postgres_operator import PostgresOperator
+from confluent_kafka import  Producer
+import json
 
 #Global variables
-URL = "https://opentdb.com/api.php?amount=1"
+URL = "http://localhost:9000/tariff"
 
-DB_CONN_ID = "postgres_otus"
+KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
 
-INSERT_QUERY = """
-    INSERT INTO quiz_questions (type, difficulty, category, question, correct_answer)
-    VALUES('{c1}','{c2}','{c3}','{c4}','{c5}');
-"""
+OUTPUT_TOPIC = 'tariffs'
 
 #defs
 def _request_data(**context):
     """
-    Metod requests by API quiz questions data
+    Metod requests by API sales department employee data
     """
 
     url = URL
     payload = {}
     headers = {'Content-Type': 'application/json; charset=utf-8'}
     
-    req_quiz = requests.request("GET", url, headers=headers, data=payload)
-    quiz_json = req_quiz.json()['results'][0]
-    context["task_instance"].xcom_push(key="quiz_json", value=quiz_json)
+    req_tariff = requests.request("GET", url, headers=headers, data=payload)
+    tariff_json = req_tariff.json()['results'][0]
+    context["task_instance"].xcom_push(key="tariff_json", value=tariff_json)
 
-def _parse_data(**context):
+def _validate_data(**context):
     """
-    Metod pasre incoming JSON into structure
-    """
-
-    quiz_json = context["task_instance"].xcom_pull(task_ids="request_data", key="quiz_json")
-    quiz_data = [quiz_json['type'], quiz_json['difficulty'], quiz_json['category'], quiz_json['question'],quiz_json['correct_answer'] ]
-    _log.info(quiz_data)
-
-    context["task_instance"].xcom_push(key="quiz_data", value=quiz_data)
-
-def _insert_data(**context):
-    """
-    Metod insert incoming quiz question structure into PostgreSQL DB
+    Metod validate incoming structure
     """
 
-    quiz_data = context["task_instance"].xcom_pull(task_ids="parse_data", key="quiz_data")
-    dest = PostgresHook(postgres_conn_id=DB_CONN_ID)
-    dest_conn = dest.get_conn()
-    dest_cursor = dest_conn.cursor()
+    tariff_json = context["task_instance"].xcom_pull(task_ids="request_data", key="tariff_json")
 
-    dest_cursor.execute(INSERT_QUERY.format(c1=quiz_data[0],c2=quiz_data[1],c3=quiz_data[2],c4=quiz_data[3],c5=quiz_data[4]))
-    dest_conn.commit()
-    dest_conn.close()
+    tariff_data = json.loads(tariff_json)
+
+    if not isinstance(tariff_data["id"], int) or tariff_data["id"] <= 0:
+        _log.info("Tariff ID must be a positive integer.")
+
+    if not isinstance(tariff_data["name"], str) or not tariff_data["name"].strip():
+        _log.info("Tariff name must be a non-empty string.")
+
+    if not isinstance(tariff_data["description"], str):
+        _log.info("Tariff description must be a string.")
+
+    if not isinstance(tariff_data["price"], (int, float)) or not (990 <= tariff_data["price"] <= 99990):
+        _log.info("Price must be a number between 990 and 99990.")
+
+    if not isinstance(tariff_data["start_at"], str):  # Так как мы изменили формат
+        _log.info("Start date must be a string in ISO format.")
+
+    if not isinstance(tariff_data["ends_at"], str):
+        _log.info("End date must be a string in ISO format.")
+
+    start_at = datetime.fromisoformat(tariff_data["start_at"])
+    ends_at = datetime.fromisoformat(tariff_data["ends_at"])
+    
+    if start_at >= ends_at:
+        _log.info("Start date must be before end date.")
+
+    if not isinstance(tariff_data["tariff_size"], int) or not (1 <= tariff_data["tariff_size"] <= 6):
+        _log.info("Tariff size must be an integer between 1 and 6.")
+
+    context["task_instance"].xcom_push(key="tariff_data", value=tariff_data)
+
+
+def _produce_message(**context):
+    tariff_data = context['task_instance'].xcom_pull(task_ids='process_message')
+    
+    if context is None:
+        _log.info("No context to produce")
+        return
+
+    # Инициализация Producer
+    producer = Producer({'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS})
+
+    # Отправка сообщения в другой топик
+    producer.produce(OUTPUT_TOPIC, value=json.dumps(tariff_data))
+    producer.flush()
+    _log.info(f"Context sent to {OUTPUT_TOPIC}: {tariff_data}")
 
 #DAG init
 args = {'owner': 'airflow'}
 
 with DAG(
-    dag_id="OTUS_HW_DAG",
+    dag_id="Tariff_Load_DAG",
     default_args=args,
-    description='DAG parses quiz questions from API to PostgreSQL DB',
+    description='DAG validates tariffs data from API to send it Kafka',
     start_date=datetime(2024,9,1),
     tags=['otus'],
-    schedule_interval='*/2 * * * *',
+    schedule_interval='0 0 * * *',
     catchup=False,
     max_active_runs=1,
     max_active_tasks=1
  ) as dag:
 #task init
     request_data = PythonOperator(task_id='request_data', python_callable=_request_data, provide_context=True)
-    parse_data = PythonOperator(task_id='parse_data', python_callable=_parse_data, provide_context=True)
-    insert_data = PythonOperator(task_id='insert_data', python_callable=_insert_data, provide_context=True)
+    validate_data = PythonOperator(task_id='validate_data', python_callable=_validate_data, provide_context=True)
+    produce_message = PythonOperator(task_id='produce_message', python_callable=_produce_message, provide_context=True)
 
 #task instance order
-request_data >> parse_data >> insert_data
+request_data >> validate_data >> produce_message

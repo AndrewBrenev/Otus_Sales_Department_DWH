@@ -1,81 +1,110 @@
-
-#imports
 from datetime import datetime
-import requests
-import logging as _log
-
 from airflow import DAG
-from airflow.hooks.postgres_hook import PostgresHook
+import logging as _log
 from airflow.operators.python_operator import PythonOperator
-from airflow.operators.postgres_operator import PostgresOperator
+from confluent_kafka import Consumer, Producer, KafkaException
+import json
 
-#Global variables
-URL = "https://opentdb.com/api.php?amount=1"
+# Настройки Kafka
+KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
+INPUT_TOPIC = 'companies_activity_data_in'
+OUTPUT_TOPIC = 'companies_activity_data'
 
-DB_CONN_ID = "postgres_otus"
+def _consume_message():
+    # Инициализация Consumer
+    consumer = Consumer({
+        'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+        'group.id': 'my_group',
+        'auto.offset.reset': 'earliest'
+    })
+    consumer.subscribe([INPUT_TOPIC])
 
-INSERT_QUERY = """
-    INSERT INTO quiz_questions (type, difficulty, category, question, correct_answer)
-    VALUES('{c1}','{c2}','{c3}','{c4}','{c5}');
-"""
+    try:
+        msg = consumer.poll(1.0)  # Ждем сообщения в течение 1 сек
+        if msg is None:
+            _log.info("No message received")
+            return None  # Если сообщений нет, завершаем таск без ошибок
 
-#defs
-def _request_data(**context):
-    """
-    Metod requests by API quiz questions data
-    """
+        if msg.error():
+            raise KafkaException(msg.error())
 
-    url = URL
-    payload = {}
-    headers = {'Content-Type': 'application/json; charset=utf-8'}
+        context = json.loads(msg.value().decode('utf-8'))
+        _log.info(f"Received context: {context}")
+
+        return context  # Возвращаем контекст для XCom
+
+    except Exception as e:
+        _log.info(f"Error: {str(e)}")
+    finally:
+        consumer.close()
+
+def _validate_message(**kwargs):
+    activity_data = kwargs['ti'].xcom_pull(task_ids='consume_message')
     
-    req_quiz = requests.request("GET", url, headers=headers, data=payload)
-    quiz_json = req_quiz.json()['results'][0]
-    context["task_instance"].xcom_push(key="quiz_json", value=quiz_json)
+    if activity_data is None:
+        _log.info("No context to validate")
+        return None
 
-def _parse_data(**context):
-    """
-    Metod pasre incoming JSON into structure
-    """
+  
+    # Проверка наличия необходимых ключей
+    required_keys = ["id", "company_id", "event_time", "event_type"]
+    for key in required_keys:
+        if key not in activity_data:
+            _log.info(f"Missing required key: {key}")
+    
+    # Проверка типа id
+    if not isinstance(activity_data["id"], int) or not (1 <= activity_data["id"] <= 1000):
+        _log.info("ID must be an integer between 1 and 1000.")
+    
+    # Проверка типа company_id
+    if not isinstance(activity_data["company_id"], int) or not (1 <= activity_data["company_id"] <= 50):
+        _log.info("Company ID must be an integer between 1 and 50.")
+    
+    # Проверка event_time
+    try:
+        datetime.strptime(activity_data["event_time"], '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        _log.info("Event time must be a string in format 'YYYY-MM-DD HH:MM:SS'.")
 
-    quiz_json = context["task_instance"].xcom_pull(task_ids="request_data", key="quiz_json")
-    quiz_data = [quiz_json['type'], quiz_json['difficulty'], quiz_json['category'], quiz_json['question'],quiz_json['correct_answer'] ]
-    _log.info(quiz_data)
+    # Проверка event_type
+    if activity_data["event_type"] not in ['SIGN', 'CANCEL', 'REQUEST', 'APPROVE']:
+        _log.info("Event type must be one of: 'SIGN', 'CANCEL', 'REQUEST', 'APPROVE'.")
 
-    context["task_instance"].xcom_push(key="quiz_data", value=quiz_data)
+    return activity_data
 
-def _insert_data(**context):
-    """
-    Metod insert incoming quiz question structure into PostgreSQL DB
-    """
+def _produce_message(**kwargs):
+    context = kwargs['ti'].xcom_pull(task_ids='process_message')
+    
+    if context is None:
+        _log.info("No context to produce")
+        return
 
-    quiz_data = context["task_instance"].xcom_pull(task_ids="parse_data", key="quiz_data")
-    dest = PostgresHook(postgres_conn_id=DB_CONN_ID)
-    dest_conn = dest.get_conn()
-    dest_cursor = dest_conn.cursor()
+    # Инициализация Producer
+    producer = Producer({'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS})
 
-    dest_cursor.execute(INSERT_QUERY.format(c1=quiz_data[0],c2=quiz_data[1],c3=quiz_data[2],c4=quiz_data[3],c5=quiz_data[4]))
-    dest_conn.commit()
-    dest_conn.close()
+    # Отправка сообщения в другой топик
+    producer.produce(OUTPUT_TOPIC, value=json.dumps(context))
+    producer.flush()
+    _log.info(f"Context sent to {OUTPUT_TOPIC}: {context}")
 
-#DAG init
+# Определяем DAG
 args = {'owner': 'airflow'}
 
 with DAG(
-    dag_id="OTUS_HW_DAG",
+    dag_id="Companies_Actions_DAG",
     default_args=args,
-    description='DAG parses quiz questions from API to PostgreSQL DB',
-    start_date=datetime(2024,9,1),
+    description='DAG read company ativity from Kafka, validate, process and public to Kafka',
+    start_date=datetime(2024,11,9),
     tags=['otus'],
-    schedule_interval='*/2 * * * *',
+    schedule_interval='* * * * *',
     catchup=False,
     max_active_runs=1,
     max_active_tasks=1
  ) as dag:
 #task init
-    request_data = PythonOperator(task_id='request_data', python_callable=_request_data, provide_context=True)
-    parse_data = PythonOperator(task_id='parse_data', python_callable=_parse_data, provide_context=True)
-    insert_data = PythonOperator(task_id='insert_data', python_callable=_insert_data, provide_context=True)
+    consume_task = PythonOperator(task_id='consume_message',python_callable=_consume_message,provide_context=True)
+    validate_task = PythonOperator(task_id='validate_message',python_callable=_validate_message,provide_context=True)
+    produce_task = PythonOperator(task_id='produce_message',python_callable=_produce_message,provide_context=True)
 
-#task instance order
-request_data >> parse_data >> insert_data
+# Определяем порядок выполнения задач
+consume_task >> validate_task  >> produce_task
