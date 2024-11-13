@@ -21,12 +21,11 @@ def _request_data(**context):
     Metod requests by API sales department employee data
     """
 
-    url = URL
     payload = {}
     headers = {'Content-Type': 'application/json; charset=utf-8'}
     
-    req_seller = requests.request("GET", url, headers=headers, data=payload)
-    seller_json = req_seller.json()['results'][0]
+    req_seller = requests.request("GET", URL, headers=headers, data=payload)
+    seller_json = req_seller.json()
     context["task_instance"].xcom_push(key="seller_json", value=seller_json)
 
 def _validate_data(**context):

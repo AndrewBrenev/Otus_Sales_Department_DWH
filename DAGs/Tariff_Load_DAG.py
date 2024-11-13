@@ -9,7 +9,7 @@ from confluent_kafka import  Producer
 import json
 
 #Global variables
-URL = "http://localhost:9000/tariff"
+URL = "https://localhost:9000/tariff"
 
 KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
 
@@ -21,12 +21,12 @@ def _request_data(**context):
     Metod requests by API sales department employee data
     """
 
-    url = URL
     payload = {}
     headers = {'Content-Type': 'application/json; charset=utf-8'}
     
-    req_tariff = requests.request("GET", url, headers=headers, data=payload)
-    tariff_json = req_tariff.json()['results'][0]
+    req_tariff = requests.request("GET", URL, headers=headers, data=payload)
+    tariff_json = req_tariff.json()
+    _log.info(tariff_json)
     context["task_instance"].xcom_push(key="tariff_json", value=tariff_json)
 
 def _validate_data(**context):
