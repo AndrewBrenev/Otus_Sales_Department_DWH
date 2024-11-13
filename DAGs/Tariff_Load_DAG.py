@@ -1,12 +1,13 @@
 
 #imports
-from datetime import datetime
-import requests
+import json
 import logging as _log
+
+import requests
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from confluent_kafka import  Producer
-import json
+from datetime import datetime
 
 #Global variables
 URL = "https://localhost:9000/tariff"
