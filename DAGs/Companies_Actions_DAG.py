@@ -1,9 +1,10 @@
+import json
+import logging as _log
+
 from datetime import datetime
 from airflow import DAG
-import logging as _log
 from airflow.operators.python_operator import PythonOperator
 from confluent_kafka import Consumer, Producer, KafkaException
-import json
 
 # Настройки Kafka
 KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
