@@ -1,9 +1,10 @@
+import json
+import logging as _log
+
 from datetime import datetime
 from airflow import DAG
-import logging as _log
 from airflow.operators.python_operator import PythonOperator
 from confluent_kafka import Consumer, Producer, KafkaException
-import json
 
 # Настройки Kafka
 KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
@@ -53,47 +54,47 @@ def _validate_message(**kwargs):
     
     for field in required_fields:
         if field not in activity_data:
-            raise ValueError(f"Missing required field: {field}")
+            _log.info(f"Missing required field: {field}")
     
     # Проверка типов и данных
     if not isinstance(activity_data["seller_id"], int):
-        raise ValueError("seller_id must be an integer.")
+        _log.info("seller_id must be an integer.")
 
     if not isinstance(activity_data["tariff_id"], int):
-        raise ValueError("tariff_id must be an integer.")
+        _log.info("tariff_id must be an integer.")
 
     sale_date = activity_data["sale_date"]
     try:
         datetime.strptime(sale_date, '%Y-%m-%d %H:%M:%S')
     except ValueError:
-        raise ValueError("sale_date must be in 'YYYY-MM-DD HH:MM:SS' format.")
+        _log.info("sale_date must be in 'YYYY-MM-DD HH:MM:SS' format.")
 
     if not isinstance(activity_data["price"], (int, float)):
-        raise ValueError("price must be a number.")
+        _log.info("price must be a number.")
     if not (10.0 <= activity_data["price"] <= 500.0):
-        raise ValueError("price must be between 10.0 and 500.0.")
+        _log.info("price must be between 10.0 and 500.0.")
 
     if not isinstance(activity_data["discount"], (int, float)):
-        raise ValueError("discount must be a number.")
+        _log.info("discount must be a number.")
     if not (0.0 <= activity_data["discount"] <= 50.0):
-        raise ValueError("discount must be between 0.0 and 50.0.")
+        _log.info("discount must be between 0.0 and 50.0.")
 
     if not isinstance(activity_data["company_id"], int):
-        raise ValueError("company_id must be an integer.")
+        _log.info("company_id must be an integer.")
     if not (1 <= activity_data["company_id"] <= 50):
-        raise ValueError("company_id must be between 1 and 50.")
+        _log.info("company_id must be between 1 and 50.")
 
     if not isinstance(activity_data["company_name"], str):
-        raise ValueError("company_name must be a string.")
+        _log.info("company_name must be a string.")
     
     if not isinstance(activity_data["company_inn"], int):
-        raise ValueError("company_inn must be an integer.")
+        _log.info("company_inn must be an integer.")
 
     company_created_at = activity_data["company_created_at"]
     try:
         datetime.strptime(company_created_at, '%Y-%m-%d %H:%M:%S')
     except ValueError:
-        raise ValueError("company_created_at must be in 'YYYY-MM-DD HH:MM:SS' format.")
+        _log.info("company_created_at must be in 'YYYY-MM-DD HH:MM:SS' format.")
 
     return activity_data
 
